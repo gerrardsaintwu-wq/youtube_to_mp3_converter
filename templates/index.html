@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <title>YT2MP3 Magic</title>
+</head>
+<body>
+    <div class="top-container">
+        <form onsubmit="startProcess(event)">
+            <h1>Youtube to MP3</h1>
+            <input type="text" id="urlInput" placeholder="Paste YouTube Link Here" required>
+            <button type="submit" id="mainBtn">Download</button>
+            
+            <div id="progress-area" class="progress-area" style="display: none;">
+                <div class="bar-bg"><div class="bar-fg" id="bar">0%</div></div>
+                <p id="status-txt" class="status-txt">Converting...</p>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        async function startProcess(e) {
+            e.preventDefault();
+            const url = document.getElementById('urlInput').value;
+            const btn = document.getElementById('mainBtn');
+            const progressArea = document.getElementById('progress-area');
+            const statusTxt = document.getElementById('status-txt');
+            const bar = document.getElementById('bar');
+
+            btn.disabled = true;
+            btn.innerText = "Processing...";
+            progressArea.style.display = 'block';
+            bar.style.width = '50%';
+            bar.innerText = '50%';
+            statusTxt.innerText = 'Downloading & converting with yt-dlp...';
+
+            try {
+                const res = await fetch(`/api/convert?url=${encodeURIComponent(url)}`);
+                const data = await res.json();
+                
+                if (!res.ok) throw new Error(data.error || "Conversion failed");
+
+                bar.style.width = '100%';
+                bar.innerText = '100%';
+                statusTxt.innerText = 'Done! Downloading file...';
+
+                // Automatically trigger file download via token route
+                window.location.href = `/download?token=${data.token}`;
+                
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.innerText = "Download";
+                    progressArea.style.display = 'none';
+                }, 3000);
+
+            } catch (err) {
+                alert("Error: " + err.message);
+                btn.disabled = false;
+                btn.innerText = "Download";
+                progressArea.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
