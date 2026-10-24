@@ -15,29 +15,39 @@
             <div id="step-1" class="step-container">
                 <input type="text" id="urlInput" placeholder="Paste YouTube Video or Playlist Link" required>
                 <button type="submit" id="analyzeBtn">Analyze Link</button>
+                
+                <!-- Analysis Loading Bar -->
+                <div id="analyze-progress" class="progress-area" style="display: none;">
+                    <div class="bar-bg"><div class="bar-fg" id="analyze-bar" style="width: 100%; animation: pulse 1.5s infinite;"></div></div>
+                    <p class="status-txt">Analyzing URL and filtering unplayable items...</p>
+                </div>
             </div>
 
             <!-- STEP 2: Configure -->
             <div id="step-2" class="step-container" style="display: none;">
-                <h3 id="mediaTitle" style="margin-bottom: 10px; font-size: 1.1rem; color: #333;"></h3>
+                <div class="media-preview">
+                    <img id="mediaThumb" src="" alt="Thumbnail" style="width: 120px; border-radius: 8px; object-fit: cover; display:none;">
+                    <h3 id="mediaTitle" style="font-size: 1rem; color: #333; text-align: left; flex: 1;"></h3>
+                </div>
                 
                 <div id="playlist-container" style="display: none;">
+                    <input type="text" id="playlistSearch" placeholder="Search playlist items..." oninput="filterPlaylist()" style="margin-bottom: 10px; padding: 10px; font-size: 0.9rem;">
                     <div class="playlist-header">
-                        <span>Select Videos</span>
+                        <span id="selectedCount">Select Videos</span>
                         <label><input type="checkbox" id="selectAll" checked onchange="toggleAll(this)"> All</label>
                     </div>
                     <div class="playlist-list" id="pl-list"></div>
                 </div>
 
                 <div class="config-row">
-                    <select id="formatSelect" class="format-dropdown">
+                    <select id="formatSelect" class="format-dropdown" onchange="updateQualityLabels()">
                         <option value="mp3">Audio (MP3)</option>
                         <option value="mp4">Video (MP4)</option>
                     </select>
                     <select id="qualitySelect" class="format-dropdown">
-                        <option value="high">High Quality</option>
-                        <option value="medium">Medium Quality</option>
-                        <option value="low">Low Quality</option>
+                        <option value="high">High Quality (320 kbps)</option>
+                        <option value="medium">Medium Quality (192 kbps)</option>
+                        <option value="low">Low Quality (128 kbps)</option>
                     </select>
                 </div>
                 
@@ -45,7 +55,10 @@
                     <input type="checkbox" id="metaCheck" checked> Embed Metadata (Thumbnail, Title, Creator)
                 </label>
 
-                <button type="button" id="convertBtn" onclick="startConversion()">Convert Media</button>
+                <div class="config-row">
+                    <button type="button" onclick="resetApp()" style="background-color: #6c757d; flex: 1;">← Back</button>
+                    <button type="button" id="convertBtn" onclick="startConversion()" style="flex: 2;">Convert Media</button>
+                </div>
             </div>
 
             <!-- STEP 3: Progress & Manual Download -->
@@ -55,8 +68,8 @@
                     <p id="status-txt" class="status-txt">Starting...</p>
                 </div>
                 
-                <!-- Manual Download Buffer -->
                 <button type="button" id="downloadBtn" style="display: none; margin-top: 15px; background-color: #28a745;">Download File</button>
+                <button type="button" id="resetBtn" onclick="resetApp()" style="display: none; margin-top: 10px; background-color: #007bff;">Convert Another</button>
             </div>
         </form>
     </div>
@@ -64,13 +77,34 @@
     <script>
         let currentMedia = null;
 
+        function updateQualityLabels() {
+            const format = document.getElementById('formatSelect').value;
+            const qualitySelect = document.getElementById('qualitySelect');
+            
+            if (format === 'mp3') {
+                qualitySelect.innerHTML = `
+                    <option value="high">High Quality (320 kbps)</option>
+                    <option value="medium">Medium Quality (192 kbps)</option>
+                    <option value="low">Low Quality (128 kbps)</option>
+                `;
+            } else {
+                qualitySelect.innerHTML = `
+                    <option value="high">High Quality (1080p Video)</option>
+                    <option value="medium">Medium Quality (720p Video)</option>
+                    <option value="low">Low Quality (480p Video)</option>
+                `;
+            }
+        }
+
         async function analyzeUrl(e) {
             e.preventDefault();
             const btn = document.getElementById('analyzeBtn');
+            const progressArea = document.getElementById('analyze-progress');
             const url = document.getElementById('urlInput').value;
             
             btn.disabled = true;
-            btn.innerText = "Analyzing...";
+            btn.style.display = 'none';
+            progressArea.style.display = 'block';
 
             try {
                 const res = await fetch('/api/info', {
@@ -86,33 +120,67 @@
                 document.getElementById('step-1').style.display = 'none';
                 document.getElementById('step-2').style.display = 'flex';
                 document.getElementById('mediaTitle').innerText = data.title;
+                
+                if (data.thumbnail) {
+                    const thumb = document.getElementById('mediaThumb');
+                    thumb.src = data.thumbnail;
+                    thumb.style.display = 'block';
+                }
 
                 if (data.type === 'playlist') {
                     const plContainer = document.getElementById('playlist-container');
                     const plList = document.getElementById('pl-list');
                     plContainer.style.display = 'block';
                     
-                    data.videos.forEach((vid, i) => {
-                        plList.innerHTML += `
-                            <div class="playlist-item">
-                                <label>
-                                    <input type="checkbox" class="playlist-cb" value="${vid.url}" checked>
-                                    ${vid.title}
-                                </label>
-                            </div>
-                        `;
-                    });
+                    renderPlaylistItems(data.videos);
                 }
             } catch (err) {
-                alert("Error: " + err.message);
-            } finally {
+                alert("Analysis Failed: " + err.message);
                 btn.disabled = false;
-                btn.innerText = "Analyze Link";
+                btn.style.display = 'block';
+                progressArea.style.display = 'none';
             }
         }
 
+        function renderPlaylistItems(videos) {
+            const plList = document.getElementById('pl-list');
+            plList.innerHTML = '';
+            videos.forEach((vid, i) => {
+                plList.innerHTML += `
+                    <div class="playlist-item" data-title="${vid.title.toLowerCase()}">
+                        <label>
+                            <input type="checkbox" class="playlist-cb" value="${vid.url}" checked onchange="updateSelectedCount()">
+                            ${vid.title}
+                        </label>
+                    </div>
+                `;
+            });
+            updateSelectedCount();
+        }
+
+        function filterPlaylist() {
+            const query = document.getElementById('playlistSearch').value.toLowerCase();
+            const items = document.querySelectorAll('.playlist-item');
+            items.forEach(item => {
+                const title = item.getAttribute('data-title');
+                item.style.display = title.includes(query) ? 'flex' : 'none';
+            });
+        }
+
         function toggleAll(source) {
-            document.querySelectorAll('.playlist-cb').forEach(cb => cb.checked = source.checked);
+            const visibleItems = document.querySelectorAll('.playlist-item');
+            visibleItems.forEach(item => {
+                if (item.style.display !== 'none') {
+                    item.querySelector('.playlist-cb').checked = source.checked;
+                }
+            });
+            updateSelectedCount();
+        }
+
+        function updateSelectedCount() {
+            const total = document.querySelectorAll('.playlist-cb').length;
+            const checked = document.querySelectorAll('.playlist-cb:checked').length;
+            document.getElementById('selectedCount').innerText = `Select Videos (${checked}/${total} selected)`;
         }
 
         async function startConversion() {
@@ -135,6 +203,7 @@
             const bar = document.getElementById('bar');
             const statusTxt = document.getElementById('status-txt');
             const downloadBtn = document.getElementById('downloadBtn');
+            const resetBtn = document.getElementById('resetBtn');
 
             try {
                 const res = await fetch('/api/convert', {
@@ -145,7 +214,6 @@
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error);
 
-                // Polling Loop
                 const interval = setInterval(async () => {
                     const pollRes = await fetch(`/api/status?job_id=${data.job_id}`);
                     const job = await pollRes.json();
@@ -154,6 +222,7 @@
                         clearInterval(interval);
                         statusTxt.innerText = "Error: " + job.error;
                         bar.style.backgroundColor = 'red';
+                        resetBtn.style.display = 'block';
                     } else {
                         bar.style.width = job.progress + '%';
                         statusTxt.innerText = `Processing: ${job.progress}%`;
@@ -162,8 +231,8 @@
                             clearInterval(interval);
                             statusTxt.innerText = "Complete! Ready to download.";
                             
-                            // Buffer constraint: User must manually click to trigger OS prompt
                             downloadBtn.style.display = 'block';
+                            resetBtn.style.display = 'block';
                             downloadBtn.onclick = () => {
                                 window.location.href = `/download?token=${job.token}`;
                             };
@@ -173,7 +242,29 @@
 
             } catch (err) {
                 statusTxt.innerText = "Failed to start: " + err.message;
+                resetBtn.style.display = 'block';
             }
+        }
+
+        function resetApp() {
+            currentMedia = null;
+            document.getElementById('urlInput').value = '';
+            document.getElementById('playlistSearch').value = '';
+            document.getElementById('mediaThumb').style.display = 'none';
+            document.getElementById('mediaTitle').innerText = '';
+            document.getElementById('pl-list').innerHTML = '';
+            document.getElementById('analyzeBtn').disabled = false;
+            document.getElementById('analyzeBtn').style.display = 'block';
+            document.getElementById('analyze-progress').style.display = 'none';
+            
+            document.getElementById('step-3').style.display = 'none';
+            document.getElementById('step-2').style.display = 'none';
+            document.getElementById('step-1').style.display = 'flex';
+            
+            document.getElementById('downloadBtn').style.display = 'none';
+            document.getElementById('resetBtn').style.display = 'none';
+            document.getElementById('bar').style.width = '0%';
+            document.getElementById('bar').style.backgroundColor = '#ff0000';
         }
     </script>
 </body>
