@@ -8,7 +8,7 @@
 </head>
 <body>
     <div class="top-container">
-        <form onsubmit="analyzeUrl(event)" id="mainForm">
+        <form onsubmit="startAnalysis(event)" id="mainForm">
             <h1>Youtube to Media</h1>
             
             <!-- STEP 1: Analyze -->
@@ -16,10 +16,10 @@
                 <input type="text" id="urlInput" placeholder="Paste YouTube Video or Playlist Link" required>
                 <button type="submit" id="analyzeBtn">Analyze Link</button>
                 
-                <!-- Analysis Loading Bar -->
+                <!-- Real-time Analysis Progress -->
                 <div id="analyze-progress" class="progress-area" style="display: none;">
-                    <div class="bar-bg"><div class="bar-fg" id="analyze-bar" style="width: 100%; animation: pulse 1.5s infinite;"></div></div>
-                    <p class="status-txt">Analyzing URL and filtering unplayable items...</p>
+                    <div class="bar-bg"><div class="bar-fg" id="analyze-bar" style="width: 0%; background-color: #007bff;"></div></div>
+                    <p id="analyze-status-txt" class="status-txt">Initializing...</p>
                 </div>
             </div>
 
@@ -27,24 +27,27 @@
             <div id="step-2" class="step-container" style="display: none;">
                 <div class="media-preview">
                     <img id="mediaThumb" src="" alt="Thumbnail" style="width: 120px; border-radius: 8px; object-fit: cover; display:none;">
-                    <h3 id="mediaTitle" style="font-size: 1rem; color: #333; text-align: left; flex: 1;"></h3>
+                    <div class="media-info">
+                        <h3 id="mediaTitle"></h3>
+                        <p id="singleFileSize" style="font-size: 0.85rem; color: #666; margin-top: 5px;"></p>
+                    </div>
                 </div>
                 
                 <div id="playlist-container" style="display: none;">
                     <input type="text" id="playlistSearch" placeholder="Search playlist items..." oninput="filterPlaylist()" style="margin-bottom: 10px; padding: 10px; font-size: 0.9rem;">
                     <div class="playlist-header">
-                        <span id="selectedCount">Select Videos</span>
+                        <span id="selectedCount" style="font-weight: bold;">Select Videos</span>
                         <label><input type="checkbox" id="selectAll" checked onchange="toggleAll(this)"> All</label>
                     </div>
                     <div class="playlist-list" id="pl-list"></div>
                 </div>
 
                 <div class="config-row">
-                    <select id="formatSelect" class="format-dropdown" onchange="updateQualityLabels()">
+                    <select id="formatSelect" class="format-dropdown" onchange="updateQualityLabelsAndSizes()">
                         <option value="mp3">Audio (MP3)</option>
                         <option value="mp4">Video (MP4)</option>
                     </select>
-                    <select id="qualitySelect" class="format-dropdown">
+                    <select id="qualitySelect" class="format-dropdown" onchange="updateQualityLabelsAndSizes()">
                         <option value="high">High Quality (320 kbps)</option>
                         <option value="medium">Medium Quality (192 kbps)</option>
                         <option value="low">Low Quality (128 kbps)</option>
@@ -64,12 +67,12 @@
             <!-- STEP 3: Progress & Manual Download -->
             <div id="step-3" class="step-container" style="display: none;">
                 <div class="progress-area" style="display: block;">
-                    <div class="bar-bg"><div class="bar-fg" id="bar">0%</div></div>
+                    <div class="bar-bg"><div class="bar-fg" id="bar"></div></div>
                     <p id="status-txt" class="status-txt">Starting...</p>
                 </div>
                 
                 <button type="button" id="downloadBtn" style="display: none; margin-top: 15px; background-color: #28a745;">Download File</button>
-                <button type="button" id="resetBtn" onclick="resetApp()" style="display: none; margin-top: 10px; background-color: #007bff;">Convert Another</button>
+                <button type="button" id="resetBtn" onclick="resetApp()" style="display: none; margin-top: 10px; background-color: #0056b3;">Convert Another</button>
             </div>
         </form>
     </div>
@@ -77,85 +80,163 @@
     <script>
         let currentMedia = null;
 
-        function updateQualityLabels() {
+        function estimateSize(durationSec, format, quality) {
+            if (!durationSec) return 0;
+            let mbPerSec = 0;
+            if (format === 'mp3') {
+                if (quality === 'high') mbPerSec = 0.04;
+                else if (quality === 'medium') mbPerSec = 0.024;
+                else mbPerSec = 0.016;
+            } else {
+                if (quality === 'high') mbPerSec = 0.5;
+                else if (quality === 'medium') mbPerSec = 0.25;
+                else mbPerSec = 0.13;
+            }
+            return durationSec * mbPerSec;
+        }
+
+        function formatSizeMB(mb) {
+            if (mb === 0) return 'Size Unknown';
+            if (mb < 1) return (mb * 1024).toFixed(1) + ' KB';
+            if (mb > 1024) return (mb / 1024).toFixed(2) + ' GB';
+            return mb.toFixed(1) + ' MB';
+        }
+
+        function updateQualityLabelsAndSizes() {
             const format = document.getElementById('formatSelect').value;
             const qualitySelect = document.getElementById('qualitySelect');
+            const currentQuality = qualitySelect.value;
             
             if (format === 'mp3') {
                 qualitySelect.innerHTML = `
-                    <option value="high">High Quality (320 kbps)</option>
-                    <option value="medium">Medium Quality (192 kbps)</option>
-                    <option value="low">Low Quality (128 kbps)</option>
+                    <option value="high" ${currentQuality==='high'?'selected':''}>High Quality (320 kbps)</option>
+                    <option value="medium" ${currentQuality==='medium'?'selected':''}>Medium Quality (192 kbps)</option>
+                    <option value="low" ${currentQuality==='low'?'selected':''}>Low Quality (128 kbps)</option>
                 `;
             } else {
                 qualitySelect.innerHTML = `
-                    <option value="high">High Quality (1080p Video)</option>
-                    <option value="medium">Medium Quality (720p Video)</option>
-                    <option value="low">Low Quality (480p Video)</option>
+                    <option value="high" ${currentQuality==='high'?'selected':''}>High Quality (1080p Video)</option>
+                    <option value="medium" ${currentQuality==='medium'?'selected':''}>Medium Quality (720p Video)</option>
+                    <option value="low" ${currentQuality==='low'?'selected':''}>Low Quality (480p Video)</option>
                 `;
+            }
+
+            if (!currentMedia) return;
+            const q = document.getElementById('qualitySelect').value;
+            
+            if (currentMedia.type === 'video') {
+                const mb = estimateSize(currentMedia.duration, format, q);
+                document.getElementById('singleFileSize').innerText = `Estimated Size: ~${formatSizeMB(mb)}`;
+            } else {
+                currentMedia.videos.forEach((vid, i) => {
+                    const el = document.getElementById(`size-${i}`);
+                    if (el) {
+                        const mb = estimateSize(vid.duration, format, q);
+                        el.innerText = `~${formatSizeMB(mb)}`;
+                        el.setAttribute('data-mb', mb);
+                    }
+                });
+                updateSelectedCount();
             }
         }
 
-        async function analyzeUrl(e) {
+        async function startAnalysis(e) {
             e.preventDefault();
             const btn = document.getElementById('analyzeBtn');
             const progressArea = document.getElementById('analyze-progress');
+            const analyzeBar = document.getElementById('analyze-bar');
+            const analyzeStatus = document.getElementById('analyze-status-txt');
             const url = document.getElementById('urlInput').value;
             
             btn.disabled = true;
             btn.style.display = 'none';
             progressArea.style.display = 'block';
+            analyzeBar.style.width = '0%';
+            analyzeStatus.innerText = 'Initializing analysis...';
 
             try {
-                const res = await fetch('/api/info', {
+                const startRes = await fetch('/api/analyze_start', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ url })
                 });
-                const data = await res.json();
+                const startData = await startRes.json();
                 
-                if (!res.ok) throw new Error(data.error);
+                if (!startRes.ok) throw new Error(startData.error);
 
-                currentMedia = data;
-                document.getElementById('step-1').style.display = 'none';
-                document.getElementById('step-2').style.display = 'flex';
-                document.getElementById('mediaTitle').innerText = data.title;
-                
-                if (data.thumbnail) {
-                    const thumb = document.getElementById('mediaThumb');
-                    thumb.src = data.thumbnail;
-                    thumb.style.display = 'block';
-                }
+                const interval = setInterval(async () => {
+                    const pollRes = await fetch(`/api/analyze_status?job_id=${startData.job_id}`);
+                    const job = await pollRes.json();
 
-                if (data.type === 'playlist') {
-                    const plContainer = document.getElementById('playlist-container');
-                    const plList = document.getElementById('pl-list');
-                    plContainer.style.display = 'block';
-                    
-                    renderPlaylistItems(data.videos);
-                }
+                    if (job.status === 'error') {
+                        clearInterval(interval);
+                        alert("Analysis Failed: " + job.error);
+                        resetAnalyzeUI(btn, progressArea);
+                    } else {
+                        analyzeBar.style.width = job.progress + '%';
+                        analyzeStatus.innerText = job.message;
+
+                        if (job.status === 'done') {
+                            clearInterval(interval);
+                            loadMediaUI(job.result);
+                        }
+                    }
+                }, 400); 
+
             } catch (err) {
                 alert("Analysis Failed: " + err.message);
-                btn.disabled = false;
-                btn.style.display = 'block';
-                progressArea.style.display = 'none';
+                resetAnalyzeUI(btn, progressArea);
             }
+        }
+
+        function resetAnalyzeUI(btn, progressArea) {
+            btn.disabled = false;
+            btn.style.display = 'block';
+            progressArea.style.display = 'none';
+        }
+
+        function loadMediaUI(data) {
+            currentMedia = data;
+            document.getElementById('step-1').style.display = 'none';
+            document.getElementById('step-2').style.display = 'flex';
+            document.getElementById('mediaTitle').innerText = data.title;
+            
+            if (data.thumbnail) {
+                const thumb = document.getElementById('mediaThumb');
+                thumb.src = data.thumbnail;
+                thumb.style.display = 'block';
+            }
+
+            if (data.type === 'playlist') {
+                document.getElementById('playlist-container').style.display = 'block';
+                document.getElementById('singleFileSize').style.display = 'none';
+                renderPlaylistItems(data.videos);
+            } else {
+                document.getElementById('playlist-container').style.display = 'none';
+                document.getElementById('singleFileSize').style.display = 'block';
+            }
+
+            updateQualityLabelsAndSizes();
         }
 
         function renderPlaylistItems(videos) {
             const plList = document.getElementById('pl-list');
             plList.innerHTML = '';
             videos.forEach((vid, i) => {
+                const thumbSrc = vid.thumbnail ? vid.thumbnail : 'https://via.placeholder.com/60x45?text=No+Thumb';
                 plList.innerHTML += `
                     <div class="playlist-item" data-title="${vid.title.toLowerCase()}">
-                        <label>
-                            <input type="checkbox" class="playlist-cb" value="${vid.url}" checked onchange="updateSelectedCount()">
-                            ${vid.title}
+                        <label class="pl-label">
+                            <input type="checkbox" class="playlist-cb" value="${vid.url}" checked onchange="updateSelectedCount()" data-idx="${i}">
+                            <img src="${thumbSrc}" class="pl-thumb">
+                            <div class="pl-info">
+                                <span class="pl-title">${vid.title}</span>
+                                <span class="pl-size" id="size-${i}" data-mb="0">~0 MB</span>
+                            </div>
                         </label>
                     </div>
                 `;
             });
-            updateSelectedCount();
         }
 
         function filterPlaylist() {
@@ -178,9 +259,17 @@
         }
 
         function updateSelectedCount() {
-            const total = document.querySelectorAll('.playlist-cb').length;
-            const checked = document.querySelectorAll('.playlist-cb:checked').length;
-            document.getElementById('selectedCount').innerText = `Select Videos (${checked}/${total} selected)`;
+            const checkboxes = document.querySelectorAll('.playlist-cb');
+            const checked = document.querySelectorAll('.playlist-cb:checked');
+            let totalMB = 0;
+            
+            checked.forEach(cb => {
+                const idx = cb.getAttribute('data-idx');
+                const sizeEl = document.getElementById(`size-${idx}`);
+                if (sizeEl) totalMB += parseFloat(sizeEl.getAttribute('data-mb') || 0);
+            });
+
+            document.getElementById('selectedCount').innerText = `Select Videos (${checked.length}/${checkboxes.length}) - Total: ~${formatSizeMB(totalMB)}`;
         }
 
         async function startConversion() {
@@ -196,6 +285,7 @@
             const format = document.getElementById('formatSelect').value;
             const quality = document.getElementById('qualitySelect').value;
             const metadata = document.getElementById('metaCheck').checked;
+            const playlistTitle = currentMedia.title;
 
             document.getElementById('step-2').style.display = 'none';
             document.getElementById('step-3').style.display = 'flex';
@@ -204,12 +294,15 @@
             const statusTxt = document.getElementById('status-txt');
             const downloadBtn = document.getElementById('downloadBtn');
             const resetBtn = document.getElementById('resetBtn');
+            
+            bar.style.width = '0%'; 
+            statusTxt.innerText = 'Initializing conversion...';
 
             try {
                 const res = await fetch('/api/convert', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ urls, format, quality, metadata })
+                    body: JSON.stringify({ urls, format, quality, metadata, playlist_title: playlistTitle })
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error);
@@ -252,9 +345,13 @@
             document.getElementById('playlistSearch').value = '';
             document.getElementById('mediaThumb').style.display = 'none';
             document.getElementById('mediaTitle').innerText = '';
-            document.getElementById('pl-list').innerHTML = '';
-            document.getElementById('analyzeBtn').disabled = false;
-            document.getElementById('analyzeBtn').style.display = 'block';
+            
+            const plList = document.getElementById('pl-list');
+            if (plList) plList.innerHTML = '';
+            
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            analyzeBtn.disabled = false;
+            analyzeBtn.style.display = 'block';
             document.getElementById('analyze-progress').style.display = 'none';
             
             document.getElementById('step-3').style.display = 'none';
@@ -263,8 +360,10 @@
             
             document.getElementById('downloadBtn').style.display = 'none';
             document.getElementById('resetBtn').style.display = 'none';
-            document.getElementById('bar').style.width = '0%';
-            document.getElementById('bar').style.backgroundColor = '#ff0000';
+            
+            const bar = document.getElementById('bar');
+            bar.style.width = '0%';
+            bar.style.backgroundColor = '#c1121f'; 
         }
     </script>
 </body>

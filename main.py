@@ -1,12 +1,12 @@
 """
 main.py - Advanced YouTube Audio/Video Converter API
-Includes robust error-handling for dead links, playlist item filtering (skipping deleted/null entries),
-and optimized metadata extraction.
+Includes real-time analysis progress tracking and duration extraction.
 """
 
 import secrets
 import threading
 import shutil
+import time
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from uuid import uuid4
@@ -17,85 +17,154 @@ from constants import *
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
 jobs = {}
+analysis_jobs = {}
 
 @app.route("/", methods=["GET"])
 def index():
     return render_template("index.html")
 
-@app.route("/api/info", methods=["POST"])
-def get_info():
-    """Step 1: Analyze URL safely, catching dead links and filtering null/deleted entries."""
+@app.route("/api/analyze_start", methods=["POST"])
+def analyze_start():
     url = request.json.get("url", "").strip()
     if not url:
         return jsonify(error="URL is required"), BAD_REQUEST
 
+    job_id = str(uuid4())
+    analysis_jobs[job_id] = {'status': 'processing', 'progress': 0, 'message': 'Initializing...', 'result': None}
+    
+    threading.Thread(target=analyze_worker, args=(job_id, url)).start()
+    return jsonify(job_id=job_id)
+
+@app.route("/api/analyze_status", methods=["GET"])
+def analyze_status():
+    job_id = request.args.get("job_id")
+    job = analysis_jobs.get(job_id)
+    if not job:
+        return jsonify(error="Job not found"), NOT_FOUND
+    return jsonify(job)
+
+def analyze_worker(job_id, url):
+    job = analysis_jobs[job_id]
     try:
+        job['message'] = "Fetching media information..."
         ydl_opts = {'extract_flat': True, 'quiet': True, 'nocheckcertificate': True}
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
             if not info:
-                return jsonify(error="Could not retrieve video or playlist information. The link may be dead or private."), BAD_REQUEST
+                raise Exception("Could not retrieve information. The link may be dead or private.")
 
             if 'entries' in info:
-                videos = []
-                for e in info['entries']:
-                    if e and e.get('url') and e.get('title') and e.get('title') != '[Private video]' and e.get('title') != '[Deleted video]':
-                        videos.append({
-                            'title': e.get('title'),
-                            'url': e.get('url'),
-                            'thumbnail': e.get('thumbnail') or (e.get('thumbnails', [{}])[-1].get('url') if e.get('thumbnails') else '')
-                        })
+                entries = list(info['entries'])
+                total_items = len(entries)
                 
+                if total_items == 0:
+                    raise Exception("Playlist is empty or unavailable.")
+                    
+                videos = []
+                total_steps = total_items * 3
+                current_step = 0
+                
+                for idx, e in enumerate(entries):
+                    i = idx + 1
+                    title = e.get('title')
+                    
+                    job['message'] = f"Fetching video ({i}/{total_items})"
+                    current_step += 1
+                    job['progress'] = int((current_step / total_steps) * 100)
+                    time.sleep(0.01) # Brief buffer to ensure frontend animates smoothly
+                    
+                    if e and e.get('url') and title and title not in ['[Private video]', '[Deleted video]']:
+                        job['message'] = f"Processing metadata ({i}/{total_items})"
+                        current_step += 1
+                        job['progress'] = int((current_step / total_steps) * 100)
+                        
+                        thumb = e.get('thumbnail')
+                        if not thumb and e.get('id'):
+                            thumb = f"https://i.ytimg.com/vi/{e.get('id')}/hqdefault.jpg"
+                            
+                        job['message'] = f"Calculating size ({i}/{total_items})"
+                        current_step += 1
+                        job['progress'] = int((current_step / total_steps) * 100)
+                        
+                        videos.append({
+                            'title': title,
+                            'url': e.get('url'),
+                            'thumbnail': thumb,
+                            'duration': e.get('duration', 0)
+                        })
+                    else:
+                        current_step += 2 
+                        job['progress'] = int((current_step / total_steps) * 100)
+                        
                 if not videos:
-                    return jsonify(error="The playlist contains no playable or valid videos."), BAD_REQUEST
-
-                return jsonify(
-                    type="playlist", 
-                    title=info.get('title', 'YouTube Playlist'), 
-                    thumbnail=videos[0]['thumbnail'] if videos else '',
-                    videos=videos
-                )
+                    raise Exception("The playlist contains no playable valid videos.")
+                    
+                job['result'] = {
+                    'type': 'playlist',
+                    'title': info.get('title', 'YouTube Playlist'),
+                    'thumbnail': videos[0]['thumbnail'] if videos else '',
+                    'videos': videos
+                }
             else:
                 title = info.get('title')
                 if not title or title in ['[Private video]', '[Deleted video]']:
-                    return jsonify(error="This video is private, deleted, or unavailable."), BAD_REQUEST
+                    raise Exception("This video is private, deleted, or unavailable.")
                 
-                return jsonify(
-                    type="video", 
-                    title=title, 
-                    thumbnail=info.get('thumbnail', ''),
-                    url=info.get('webpage_url') or url
-                )
+                job['message'] = "Fetching video (1/1)"
+                job['progress'] = 33
+                time.sleep(0.1)
+                
+                job['message'] = "Processing metadata (1/1)"
+                job['progress'] = 66
+                time.sleep(0.1)
+                
+                job['message'] = "Calculating size (1/1)"
+                job['progress'] = 100
+                
+                job['result'] = {
+                    'type': 'video',
+                    'title': title,
+                    'thumbnail': info.get('thumbnail', ''),
+                    'duration': info.get('duration', 0),
+                    'url': info.get('webpage_url') or url
+                }
+                
+        job['status'] = 'done'
+        job['message'] = "Analysis complete!"
+        
     except Exception as e:
         error_msg = str(e)
         if "Sign in to confirm" in error_msg or "Private video" in error_msg:
             error_msg = "This content is private or restricted."
         elif "Video unavailable" in error_msg or "Incomplete YouTube ID" in error_msg:
             error_msg = "The link is dead, invalid, or unavailable."
-        return jsonify(error=error_msg), BAD_REQUEST
+        job['status'] = 'error'
+        job['error'] = error_msg
+
 
 @app.route("/api/convert", methods=["POST"])
 def start_conversion():
-    """Step 2: Start background conversion job."""
     data = request.json
     urls = data.get("urls", [])
     format_type = data.get("format", "mp3")
     quality = data.get("quality", "high")
     embed_meta = data.get("metadata", False)
+    playlist_title = data.get("playlist_title", "YouTube_Media")
 
     if not urls:
         return jsonify(error="No valid URLs provided"), BAD_REQUEST
 
     job_id = str(uuid4())
-    jobs[job_id] = {'status': 'processing', 'progress': 0}
-
+    safe_title = "".join(c for c in playlist_title if c.isalnum() or c in " _-").strip() or "Playlist"
+    
+    jobs[job_id] = {'status': 'processing', 'progress': 0, 'safe_title': safe_title}
     threading.Thread(target=process_media_job, args=(job_id, urls, format_type, quality, embed_meta)).start()
     return jsonify(job_id=job_id)
 
 @app.route("/api/status", methods=["GET"])
 def check_status():
-    """Step 3: Poll for conversion progress."""
     job_id = request.args.get("job_id")
     job = jobs.get(job_id)
     if not job:
@@ -104,11 +173,9 @@ def check_status():
 
 @app.route("/download", methods=["GET"])
 def download_audio():
-    """Final Step: Serve the file securely."""
     token = request.args.get("token")
     if not access_manager.has_access(token) or not access_manager.is_valid(token):
         return jsonify(error="Token invalid or expired."), UNAUTHORIZED
-
     try:
         filename = access_manager.get_audio_file(token)
         return send_from_directory(ABS_DOWNLOADS_PATH, path=filename, as_attachment=True)
@@ -116,9 +183,7 @@ def download_audio():
         return jsonify(error="File not found on server."), NOT_FOUND
 
 def process_media_job(job_id, urls, format_type, quality, embed_meta):
-    """Background task to handle yt-dlp downloading, merging, tagging, and zipping."""
     job = jobs[job_id]
-    
     temp_dir = Path(ABS_DOWNLOADS_PATH) / "temp" / job_id
     temp_dir.mkdir(parents=True, exist_ok=True)
     
@@ -134,7 +199,7 @@ def process_media_job(job_id, urls, format_type, quality, embed_meta):
         opts['format'] = 'bestaudio/best'
         audio_quality = '320' if quality == 'high' else ('192' if quality == 'medium' else '128')
         postprocessors.append({'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': audio_quality})
-    else:  # mp4
+    else:
         if quality == 'high':
             opts['format'] = 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best'
         elif quality == 'medium':
@@ -183,7 +248,7 @@ def process_media_job(job_id, urls, format_type, quality, embed_meta):
             shutil.move(str(final_file), str(dest))
             access_manager.add_token(token, final_file.name)
         else:
-            zip_filename = f"{job_id}.zip"
+            zip_filename = f"{job['safe_title'][:50]}_{job_id[:6]}.zip"
             zip_path = Path(ABS_DOWNLOADS_PATH) / zip_filename
             shutil.make_archive(str(zip_path.with_suffix('')), 'zip', temp_dir)
             access_manager.add_token(token, zip_filename)
