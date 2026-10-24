@@ -4,62 +4,175 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <title>YT2MP3 Magic</title>
+    <title>YT Converter Pro</title>
 </head>
 <body>
     <div class="top-container">
-        <form onsubmit="startProcess(event)">
-            <h1>Youtube to MP3</h1>
-            <input type="text" id="urlInput" placeholder="Paste YouTube Link Here" required>
-            <button type="submit" id="mainBtn">Download</button>
+        <form onsubmit="analyzeUrl(event)" id="mainForm">
+            <h1>Youtube to Media</h1>
             
-            <div id="progress-area" class="progress-area" style="display: none;">
-                <div class="bar-bg"><div class="bar-fg" id="bar">0%</div></div>
-                <p id="status-txt" class="status-txt">Converting...</p>
+            <!-- STEP 1: Analyze -->
+            <div id="step-1" class="step-container">
+                <input type="text" id="urlInput" placeholder="Paste YouTube Video or Playlist Link" required>
+                <button type="submit" id="analyzeBtn">Analyze Link</button>
+            </div>
+
+            <!-- STEP 2: Configure -->
+            <div id="step-2" class="step-container" style="display: none;">
+                <h3 id="mediaTitle" style="margin-bottom: 10px; font-size: 1.1rem; color: #333;"></h3>
+                
+                <div id="playlist-container" style="display: none;">
+                    <div class="playlist-header">
+                        <span>Select Videos</span>
+                        <label><input type="checkbox" id="selectAll" checked onchange="toggleAll(this)"> All</label>
+                    </div>
+                    <div class="playlist-list" id="pl-list"></div>
+                </div>
+
+                <div class="config-row">
+                    <select id="formatSelect" class="format-dropdown">
+                        <option value="mp3">Audio (MP3)</option>
+                        <option value="mp4">Video (MP4)</option>
+                    </select>
+                    <select id="qualitySelect" class="format-dropdown">
+                        <option value="high">High Quality</option>
+                        <option value="medium">Medium Quality</option>
+                        <option value="low">Low Quality</option>
+                    </select>
+                </div>
+                
+                <label class="meta-checkbox">
+                    <input type="checkbox" id="metaCheck" checked> Embed Metadata (Thumbnail, Title, Creator)
+                </label>
+
+                <button type="button" id="convertBtn" onclick="startConversion()">Convert Media</button>
+            </div>
+
+            <!-- STEP 3: Progress & Manual Download -->
+            <div id="step-3" class="step-container" style="display: none;">
+                <div class="progress-area" style="display: block;">
+                    <div class="bar-bg"><div class="bar-fg" id="bar">0%</div></div>
+                    <p id="status-txt" class="status-txt">Starting...</p>
+                </div>
+                
+                <!-- Manual Download Buffer -->
+                <button type="button" id="downloadBtn" style="display: none; margin-top: 15px; background-color: #28a745;">Download File</button>
             </div>
         </form>
     </div>
 
     <script>
-        async function startProcess(e) {
-            e.preventDefault();
-            const url = document.getElementById('urlInput').value;
-            const btn = document.getElementById('mainBtn');
-            const progressArea = document.getElementById('progress-area');
-            const statusTxt = document.getElementById('status-txt');
-            const bar = document.getElementById('bar');
+        let currentMedia = null;
 
+        async function analyzeUrl(e) {
+            e.preventDefault();
+            const btn = document.getElementById('analyzeBtn');
+            const url = document.getElementById('urlInput').value;
+            
             btn.disabled = true;
-            btn.innerText = "Processing...";
-            progressArea.style.display = 'block';
-            bar.style.width = '50%';
-            bar.innerText = '50%';
-            statusTxt.innerText = 'Downloading & converting with yt-dlp...';
+            btn.innerText = "Analyzing...";
 
             try {
-                const res = await fetch(`/api/convert?url=${encodeURIComponent(url)}`);
+                const res = await fetch('/api/info', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ url })
+                });
                 const data = await res.json();
                 
-                if (!res.ok) throw new Error(data.error || "Conversion failed");
+                if (!res.ok) throw new Error(data.error);
 
-                bar.style.width = '100%';
-                bar.innerText = '100%';
-                statusTxt.innerText = 'Done! Downloading file...';
+                currentMedia = data;
+                document.getElementById('step-1').style.display = 'none';
+                document.getElementById('step-2').style.display = 'flex';
+                document.getElementById('mediaTitle').innerText = data.title;
 
-                // Automatically trigger file download via token route
-                window.location.href = `/download?token=${data.token}`;
-                
-                setTimeout(() => {
-                    btn.disabled = false;
-                    btn.innerText = "Download";
-                    progressArea.style.display = 'none';
-                }, 3000);
-
+                if (data.type === 'playlist') {
+                    const plContainer = document.getElementById('playlist-container');
+                    const plList = document.getElementById('pl-list');
+                    plContainer.style.display = 'block';
+                    
+                    data.videos.forEach((vid, i) => {
+                        plList.innerHTML += `
+                            <div class="playlist-item">
+                                <label>
+                                    <input type="checkbox" class="playlist-cb" value="${vid.url}" checked>
+                                    ${vid.title}
+                                </label>
+                            </div>
+                        `;
+                    });
+                }
             } catch (err) {
                 alert("Error: " + err.message);
+            } finally {
                 btn.disabled = false;
-                btn.innerText = "Download";
-                progressArea.style.display = 'none';
+                btn.innerText = "Analyze Link";
+            }
+        }
+
+        function toggleAll(source) {
+            document.querySelectorAll('.playlist-cb').forEach(cb => cb.checked = source.checked);
+        }
+
+        async function startConversion() {
+            let urls = [];
+            if (currentMedia.type === 'playlist') {
+                const checkboxes = document.querySelectorAll('.playlist-cb:checked');
+                if (checkboxes.length === 0) return alert("Select at least one video!");
+                checkboxes.forEach(cb => urls.push(cb.value));
+            } else {
+                urls.push(currentMedia.url);
+            }
+
+            const format = document.getElementById('formatSelect').value;
+            const quality = document.getElementById('qualitySelect').value;
+            const metadata = document.getElementById('metaCheck').checked;
+
+            document.getElementById('step-2').style.display = 'none';
+            document.getElementById('step-3').style.display = 'flex';
+            
+            const bar = document.getElementById('bar');
+            const statusTxt = document.getElementById('status-txt');
+            const downloadBtn = document.getElementById('downloadBtn');
+
+            try {
+                const res = await fetch('/api/convert', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ urls, format, quality, metadata })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error);
+
+                // Polling Loop
+                const interval = setInterval(async () => {
+                    const pollRes = await fetch(`/api/status?job_id=${data.job_id}`);
+                    const job = await pollRes.json();
+
+                    if (job.status === 'error') {
+                        clearInterval(interval);
+                        statusTxt.innerText = "Error: " + job.error;
+                        bar.style.backgroundColor = 'red';
+                    } else {
+                        bar.style.width = job.progress + '%';
+                        statusTxt.innerText = `Processing: ${job.progress}%`;
+
+                        if (job.status === 'done') {
+                            clearInterval(interval);
+                            statusTxt.innerText = "Complete! Ready to download.";
+                            
+                            // Buffer constraint: User must manually click to trigger OS prompt
+                            downloadBtn.style.display = 'block';
+                            downloadBtn.onclick = () => {
+                                window.location.href = `/download?token=${job.token}`;
+                            };
+                        }
+                    }
+                }, 1500);
+
+            } catch (err) {
+                statusTxt.innerText = "Failed to start: " + err.message;
             }
         }
     </script>

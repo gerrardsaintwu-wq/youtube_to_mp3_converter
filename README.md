@@ -18,3 +18,5 @@ Ensure you have Node.js installed, then run:
 npm install
 npm run dev
 ```
+or 
+run main.py

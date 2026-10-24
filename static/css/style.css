@@ -182,3 +182,49 @@ button:disabled {
   color: #666;
   margin-top: 4px;
 }
+
+/* --- New Step Sequence Styles --- */
+.step-container {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  width: 100%;
+}
+
+.config-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.config-row select {
+  flex: 1;
+}
+
+.meta-checkbox {
+  text-align: left;
+  font-size: 0.95rem;
+  color: #333;
+  font-family: sans-serif;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px;
+}
+
+.meta-checkbox input {
+  width: 18px;
+  height: 18px;
+  accent-color: #ff0000;
+  cursor: pointer;
+}
+
+/* Override existing playlist label color for light background */
+.playlist-item label {
+  color: #333;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
