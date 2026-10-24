@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="icon" type="image/jpg" href="{{ url_for('static', filename='images/logo.jpg') }}">
     <title>YT Converter Pro</title>
 </head>
 <body>
@@ -16,7 +17,6 @@
                 <input type="text" id="urlInput" placeholder="Paste YouTube Video or Playlist Link" required>
                 <button type="submit" id="analyzeBtn">Analyze Link</button>
                 
-                <!-- Real-time Analysis Progress -->
                 <div id="analyze-progress" class="progress-area" style="display: none;">
                     <div class="bar-bg"><div class="bar-fg" id="analyze-bar" style="width: 0%; background-color: #007bff;"></div></div>
                     <p id="analyze-status-txt" class="status-txt">Initializing...</p>
@@ -71,14 +71,25 @@
                     <p id="status-txt" class="status-txt">Starting...</p>
                 </div>
                 
-                <button type="button" id="downloadBtn" style="display: none; margin-top: 15px; background-color: #28a745;">Download File</button>
-                <button type="button" id="resetBtn" onclick="resetApp()" style="display: none; margin-top: 10px; background-color: #0056b3;">Convert Another</button>
+                <!-- Updated Button Colors -->
+                <button type="button" id="downloadBtn" style="display: none; margin-top: 15px; background-color: #c1121f;">Download File</button>
+                <button type="button" id="resetBtn" onclick="handleReset()" style="display: none; margin-top: 10px; background-color: #6c757d;">Convert Another</button>
             </div>
         </form>
     </div>
 
     <script>
         let currentMedia = null;
+        let hasDownloaded = true; // Tracks if the user has clicked download
+
+        // Warns the user if they try to leave the page before downloading
+        window.onbeforeunload = function(e) {
+            if (!hasDownloaded) {
+                e.preventDefault();
+                e.returnValue = "You haven't downloaded your converted file yet! Are you sure you want to leave?";
+                return e.returnValue;
+            }
+        };
 
         function estimateSize(durationSec, format, quality) {
             if (!durationSec) return 0;
@@ -324,9 +335,14 @@
                             clearInterval(interval);
                             statusTxt.innerText = "Complete! Ready to download.";
                             
+                            // Set safety flag to FALSE because the file is ready but not yet downloaded
+                            hasDownloaded = false; 
+
                             downloadBtn.style.display = 'block';
                             resetBtn.style.display = 'block';
+                            
                             downloadBtn.onclick = () => {
+                                hasDownloaded = true; // Safe to leave now!
                                 window.location.href = `/download?token=${job.token}`;
                             };
                         }
@@ -337,6 +353,15 @@
                 statusTxt.innerText = "Failed to start: " + err.message;
                 resetBtn.style.display = 'block';
             }
+        }
+
+        function handleReset() {
+            if (!hasDownloaded) {
+                const confirmReset = confirm("You haven't downloaded your converted file yet! Are you sure you want to convert another one?");
+                if (!confirmReset) return; // Stop if they click 'Cancel'
+            }
+            hasDownloaded = true; // Clear the flag for the next cycle
+            resetApp();
         }
 
         function resetApp() {

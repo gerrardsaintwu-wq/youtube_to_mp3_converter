@@ -1,6 +1,6 @@
 """
 main.py - Advanced YouTube Audio/Video Converter API
-Includes real-time analysis progress tracking and duration extraction.
+Includes fixes for missing thumbnail freezes and socket timeouts.
 """
 
 import secrets
@@ -47,7 +47,7 @@ def analyze_worker(job_id, url):
     job = analysis_jobs[job_id]
     try:
         job['message'] = "Fetching media information..."
-        ydl_opts = {'extract_flat': True, 'quiet': True, 'nocheckcertificate': True}
+        ydl_opts = {'extract_flat': True, 'quiet': True, 'nocheckcertificate': True, 'socket_timeout': 15}
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -73,7 +73,7 @@ def analyze_worker(job_id, url):
                     job['message'] = f"Fetching video ({i}/{total_items})"
                     current_step += 1
                     job['progress'] = int((current_step / total_steps) * 100)
-                    time.sleep(0.01) # Brief buffer to ensure frontend animates smoothly
+                    time.sleep(0.01)
                     
                     if e and e.get('url') and title and title not in ['[Private video]', '[Deleted video]']:
                         job['message'] = f"Processing metadata ({i}/{total_items})"
@@ -115,11 +115,9 @@ def analyze_worker(job_id, url):
                 job['message'] = "Fetching video (1/1)"
                 job['progress'] = 33
                 time.sleep(0.1)
-                
                 job['message'] = "Processing metadata (1/1)"
                 job['progress'] = 66
                 time.sleep(0.1)
-                
                 job['message'] = "Calculating size (1/1)"
                 job['progress'] = 100
                 
@@ -191,7 +189,8 @@ def process_media_job(job_id, urls, format_type, quality, embed_meta):
         'outtmpl': str(temp_dir / '%(title)s.%(ext)s'),
         'quiet': True,
         'ignoreerrors': True,
-        'nocheckcertificate': True
+        'nocheckcertificate': True,
+        'socket_timeout': 15
     }
 
     postprocessors = []
@@ -236,6 +235,16 @@ def process_media_job(job_id, urls, format_type, quality, embed_meta):
             ydl.download(urls)
 
         downloaded_files = list(temp_dir.glob("*"))
+        
+        # Bug Fix: If yt-dlp metadata crashes due to no thumbnail, it leaves the folder empty.
+        # This fallback retries the download immediately WITHOUT the thumbnail embedder.
+        if not downloaded_files and embed_meta:
+            opts['writethumbnail'] = False
+            opts['postprocessors'] = [p for p in opts['postprocessors'] if p.get('key') != 'EmbedThumbnail']
+            with yt_dlp.YoutubeDL(opts) as ydl_fallback:
+                ydl_fallback.download(urls)
+            downloaded_files = list(temp_dir.glob("*"))
+
         if not downloaded_files:
             raise Exception("No valid media files could be downloaded.")
 
