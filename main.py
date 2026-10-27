@@ -13,27 +13,55 @@ from uuid import uuid4
 import yt_dlp
 import access_manager
 from constants import *
+from concurrent.futures import ThreadPoolExecutor
 
+# Global state to track if public users have unlimited access
+global_unlimited_mode = False
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
 jobs = {}
 analysis_jobs = {}
+# Create a strict limit of 3 concurrent workers. 
+# Anything beyond this waits in the queue.
+executor = ThreadPoolExecutor(max_workers=3)
 
 @app.route("/", methods=["GET"])
 def index():
     return render_template("index.html")
 
-@app.route("/api/analyze_start", methods=["POST"])
-def analyze_start():
-    url = request.json.get("url", "").strip()
-    if not url:
-        return jsonify(error="URL is required"), BAD_REQUEST
+@app.route("/api/convert", methods=["POST"])
+def start_conversion():
+    data = request.json
+    urls = data.get("urls", [])
+    format_type = data.get("format", "mp3")
+    quality = data.get("quality", "high")
+    embed_meta = data.get("metadata", False)
+    playlist_title = data.get("playlist_title", "YouTube_Media")
+
+    if not urls:
+        return jsonify(error="No valid URLs provided"), BAD_REQUEST
 
     job_id = str(uuid4())
-    analysis_jobs[job_id] = {'status': 'processing', 'progress': 0, 'message': 'Initializing...', 'result': None}
+    safe_title = "".join(c for c in playlist_title if c.isalnum() or c in " _-").strip() or "Playlist"
     
-    threading.Thread(target=analyze_worker, args=(job_id, url)).start()
+    # Set initial status to 'queued' instead of 'processing'
+    jobs[job_id] = {'status': 'queued', 'progress': 0, 'safe_title': safe_title}
+    
+    # Submit the job to the worker queue instead of starting it immediately
+    executor.submit(process_media_job, job_id, urls, format_type, quality, embed_meta)
+    
     return jsonify(job_id=job_id)
+
+@app.route("/api/admin/toggle", methods=["POST"])
+def toggle_admin():
+    global global_unlimited_mode
+    # Security: Ensure only the physical host machine can hit this endpoint
+    if request.remote_addr != '127.0.0.1':
+        return jsonify(error="Unauthorized. Only the host can toggle this."), 401
+    
+    global_unlimited_mode = not global_unlimited_mode
+    state = "UNLIMITED" if global_unlimited_mode else "RESTRICTED (30-min / 20-item limit)"
+    return jsonify(success=True, state=state, message=f"Public access is now {state}.")
 
 @app.route("/api/analyze_status", methods=["GET"])
 def analyze_status():
@@ -43,7 +71,7 @@ def analyze_status():
         return jsonify(error="Job not found"), NOT_FOUND
     return jsonify(job)
 
-def analyze_worker(job_id, url):
+def analyze_worker(job_id, url, is_admin):
     job = analysis_jobs[job_id]
     try:
         job['message'] = "Fetching media information..."
@@ -57,6 +85,11 @@ def analyze_worker(job_id, url):
 
             if 'entries' in info:
                 entries = list(info['entries'])
+                
+                # --- NEW: PLAYLIST LIMIT CHECK ---
+                if not is_admin and len(entries) > 20:
+                    raise Exception("Public playlists are limited to 20 items. Host access has unlimited downloads.")
+                
                 total_items = len(entries)
                 
                 if total_items == 0:
@@ -76,6 +109,15 @@ def analyze_worker(job_id, url):
                     time.sleep(0.01)
                     
                     if e and e.get('url') and title and title not in ['[Private video]', '[Deleted video]']:
+                        
+                        # --- NEW: DURATION LIMIT CHECK (per video in playlist) ---
+                        duration = e.get('duration', 0)
+                        if not is_admin and duration > 1800: # 1800 seconds = 30 minutes
+                            # Skip this video if it's too long
+                            current_step += 2 
+                            job['progress'] = int((current_step / total_steps) * 100)
+                            continue
+
                         job['message'] = f"Processing metadata ({i}/{total_items})"
                         current_step += 1
                         job['progress'] = int((current_step / total_steps) * 100)
@@ -92,14 +134,14 @@ def analyze_worker(job_id, url):
                             'title': title,
                             'url': e.get('url'),
                             'thumbnail': thumb,
-                            'duration': e.get('duration', 0)
+                            'duration': duration
                         })
                     else:
                         current_step += 2 
                         job['progress'] = int((current_step / total_steps) * 100)
                         
                 if not videos:
-                    raise Exception("The playlist contains no playable valid videos.")
+                    raise Exception("The playlist contains no valid videos under the 30-minute duration limit.")
                     
                 job['result'] = {
                     'type': 'playlist',
@@ -111,6 +153,11 @@ def analyze_worker(job_id, url):
                 title = info.get('title')
                 if not title or title in ['[Private video]', '[Deleted video]']:
                     raise Exception("This video is private, deleted, or unavailable.")
+                
+                # --- NEW: DURATION LIMIT CHECK (single video) ---
+                duration = info.get('duration', 0)
+                if not is_admin and duration > 1800:
+                    raise Exception("Public downloads are limited to 30 minutes. Host access has unlimited downloads.")
                 
                 job['message'] = "Fetching video (1/1)"
                 job['progress'] = 33
@@ -125,7 +172,7 @@ def analyze_worker(job_id, url):
                     'type': 'video',
                     'title': title,
                     'thumbnail': info.get('thumbnail', ''),
-                    'duration': info.get('duration', 0),
+                    'duration': duration,
                     'url': info.get('webpage_url') or url
                 }
                 
@@ -182,6 +229,11 @@ def download_audio():
 
 def process_media_job(job_id, urls, format_type, quality, embed_meta):
     job = jobs[job_id]
+    
+    # The moment the worker picks up the task, change status from queued to processing
+    job['status'] = 'processing'
+    job['progress'] = 1  # 1% means it has started
+
     temp_dir = Path(ABS_DOWNLOADS_PATH) / "temp" / job_id
     temp_dir.mkdir(parents=True, exist_ok=True)
     

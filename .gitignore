@@ -8,3 +8,5 @@ __pycache__/
 .env
 node_modules
 new_youtube
+
+media_converter.bat

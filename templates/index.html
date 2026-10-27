@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+    <meta name="theme-color" content="#c1121f">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='images/logo.jpg') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="icon" type="image/jpg" href="{{ url_for('static', filename='images/logo.jpg') }}">
     <title>YT Converter Pro</title>
@@ -327,22 +330,25 @@
                         statusTxt.innerText = "Error: " + job.error;
                         bar.style.backgroundColor = 'red';
                         resetBtn.style.display = 'block';
+                    } else if (job.status === 'queued') {
+                        // NEW: Tell the user they are in the waiting line
+                        bar.style.width = '5%';
+                        bar.style.backgroundColor = '#ffa500'; // Orange for waiting
+                        statusTxt.innerText = "Server busy. Waiting in queue...";
                     } else {
+                        // Job is processing
+                        bar.style.backgroundColor = '#c1121f'; // Back to red for downloading
                         bar.style.width = job.progress + '%';
                         statusTxt.innerText = `Processing: ${job.progress}%`;
 
                         if (job.status === 'done') {
                             clearInterval(interval);
                             statusTxt.innerText = "Complete! Ready to download.";
-                            
-                            // Set safety flag to FALSE because the file is ready but not yet downloaded
                             hasDownloaded = false; 
-
                             downloadBtn.style.display = 'block';
                             resetBtn.style.display = 'block';
-                            
                             downloadBtn.onclick = () => {
-                                hasDownloaded = true; // Safe to leave now!
+                                hasDownloaded = true;
                                 window.location.href = `/download?token=${job.token}`;
                             };
                         }
@@ -390,6 +396,37 @@
             bar.style.width = '0%';
             bar.style.backgroundColor = '#c1121f'; 
         }
+    </script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register("{{ url_for('static', filename='sw.js') }}")
+                    .then(reg => console.log('Service Worker registered.'))
+                    .catch(err => console.error('Service Worker registration failed:', err));
+            });
+        }
+
+        // Admin Dashboard Toggle (Only spawns on the host machine)
+        window.addEventListener('load', () => {
+            if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+                const adminBtn = document.createElement('button');
+                adminBtn.innerText = "👑 Toggle Public Limits";
+                adminBtn.style.cssText = "position: fixed; bottom: 15px; right: 15px; background: #000; color: #fff; border: 2px solid #c1121f; padding: 12px 15px; border-radius: 12px; cursor: pointer; z-index: 9999; font-family: sans-serif; font-weight: bold; box-shadow: 0 4px 10px rgba(0,0,0,0.3);";
+                
+                adminBtn.onclick = async () => {
+                    try {
+                        const res = await fetch('/api/admin/toggle', { method: 'POST' });
+                        const data = await res.json();
+                        if (res.ok) alert("SUCCESS: " + data.message);
+                        else alert("ERROR: " + data.error);
+                    } catch (e) {
+                        alert("Failed to reach the server.");
+                    }
+                };
+                
+                document.body.appendChild(adminBtn);
+            }
+        });
     </script>
 </body>
 </html>

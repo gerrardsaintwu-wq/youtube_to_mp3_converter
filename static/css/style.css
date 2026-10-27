@@ -263,3 +263,36 @@ button:disabled {
   margin-top: 6px;
   text-align: center;
 }
+
+/* --- Mobile Compatibility Updates --- */
+@media (max-width: 600px) {
+  form {
+    padding: 20px 15px;
+    width: 100%;
+    margin: 10px;
+  }
+  
+  .config-row {
+    flex-direction: column;
+  }
+  
+  button {
+    width: 100%;
+  }
+
+  .media-preview {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  #mediaThumb {
+    width: 100% !important;
+    max-width: 250px;
+  }
+
+  .playlist-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+}
