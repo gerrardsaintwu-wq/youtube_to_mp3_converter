@@ -144,9 +144,10 @@
             } else if (currentMedia.type === 'playlist') {
                 const data = currentMedia.videos || window._playlistData || [];
                 data.forEach((vid, i) => {
+                    const mb = estimateSize(vid.duration, format, q);
+                    vid._estMb = mb;
                     const el = document.getElementById(`size-${i}`);
                     if (el) {
-                        const mb = estimateSize(vid.duration, format, q);
                         el.innerText = `~${formatSizeMB(mb)}`;
                         el.setAttribute('data-mb', mb);
                     }
@@ -417,17 +418,22 @@
         }
 
         function updateSelectedCount() {
-            const data = window._playlistData || [];
+            const data = window._playlistData || (currentMedia && currentMedia.videos) || [];
+            const format = document.getElementById('formatSelect') ? document.getElementById('formatSelect').value : 'mp3';
+            const q = document.getElementById('qualitySelect') ? document.getElementById('qualitySelect').value : 'high';
             if (data.length > 0) {
                 let checkedCount = 0;
-                data.forEach(v => {
-                    if (v.selected !== false) checkedCount++;
-                });
                 let totalMB = 0;
-                document.querySelectorAll('.playlist-cb:checked').forEach(cb => {
-                    const idx = cb.getAttribute('data-idx');
-                    const sizeEl = document.getElementById(`size-${idx}`);
-                    if (sizeEl) totalMB += parseFloat(sizeEl.getAttribute('data-mb') || 0);
+                data.forEach(v => {
+                    if (v.selected !== false) {
+                        checkedCount++;
+                        let mb = v._estMb;
+                        if (mb === undefined || mb === null) {
+                            mb = estimateSize(v.duration, format, q);
+                            v._estMb = mb;
+                        }
+                        totalMB += mb;
+                    }
                 });
                 const elCount = document.getElementById('selectedCount');
                 if (elCount) elCount.innerText = `Select Videos (${checkedCount}/${data.length}) - Total: ~${formatSizeMB(totalMB)}`;
@@ -447,24 +453,39 @@
 
         async function startConversion() {
             let urls = [];
+            let estimated_mb = 0;
+            const format = document.getElementById('formatSelect').value;
+            const quality = document.getElementById('qualitySelect').value;
             if (currentMedia.type === 'playlist') {
                 const data = window._playlistData || [];
                 if (data.length > 0) {
                     data.forEach(v => {
-                        if (v.selected !== false) urls.push(v.url);
+                        if (v.selected !== false) {
+                            urls.push(v.url);
+                            let mb = v._estMb;
+                            if (mb === undefined || mb === null) {
+                                mb = estimateSize(v.duration, format, quality);
+                                v._estMb = mb;
+                            }
+                            estimated_mb += mb;
+                        }
                     });
                 } else {
                     const checkboxes = document.querySelectorAll('.playlist-cb:checked');
                     if (checkboxes.length === 0) return alert("Select at least one video!");
-                    checkboxes.forEach(cb => urls.push(cb.value));
+                    checkboxes.forEach(cb => {
+                        urls.push(cb.value);
+                        const idx = cb.getAttribute('data-idx');
+                        const sizeEl = document.getElementById(`size-${idx}`);
+                        if (sizeEl) estimated_mb += parseFloat(sizeEl.getAttribute('data-mb') || 0);
+                    });
                 }
                 if (urls.length === 0) return alert("Select at least one video!");
             } else {
                 urls.push(currentMedia.url);
+                estimated_mb = estimateSize(currentMedia.duration, format, quality) || 0;
             }
 
-            const format = document.getElementById('formatSelect').value;
-            const quality = document.getElementById('qualitySelect').value;
             const metadata = document.getElementById('metaCheck').checked;
             const playlistTitle = currentMedia.title;
 
@@ -483,7 +504,7 @@
                 const res = await fetch('/api/convert', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ urls, format, quality, metadata, playlist_title: playlistTitle })
+                    body: JSON.stringify({ urls, format, quality, metadata, playlist_title: playlistTitle, estimated_mb })
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error);

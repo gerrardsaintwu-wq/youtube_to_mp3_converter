@@ -18,6 +18,8 @@ from constants import *
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request
 import urllib.error
+import os
+import zipfile
 
 # Global state to track if public users have unlimited access
 global_unlimited_mode = False
@@ -25,9 +27,9 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 
 jobs = {}
 analysis_jobs = {}
-# Create a strict limit of 5 concurrent workers. 
+# Create a strict limit of 4 concurrent workers (reduced to save disk space)
 # Anything beyond this waits in the queue.
-executor = ThreadPoolExecutor(max_workers=5)
+executor = ThreadPoolExecutor(max_workers=4)
 # Separate executor for analysis so downloads aren't blocked by long playlist fetches
 analysis_executor = ThreadPoolExecutor(max_workers=3)
 
@@ -60,9 +62,27 @@ def start_conversion():
     quality = data.get("quality", "high")
     embed_meta = data.get("metadata", False)
     playlist_title = data.get("playlist_title", "YouTube_Media")
+    estimated_mb = data.get("estimated_mb", 0)
 
     if not urls:
         return jsonify(error="No valid URLs provided"), BAD_REQUEST
+
+    # Disk space preflight (1GB for non-admins)
+    try:
+        is_admin = request.remote_addr == '127.0.0.1' or global_unlimited_mode
+        usage = shutil.disk_usage(ABS_DOWNLOADS_PATH)
+        free_bytes = usage.free
+        # Estimate needed: estimated * 2.2 for temp+zip overhead + buffer
+        est_bytes = float(estimated_mb or 0) * 1024 * 1024 * 2.2
+        min_free_bytes = 1024 * 1024 * 1024 if not is_admin else 200 * 1024 * 1024
+        if est_bytes < 200 * 1024 * 1024:
+            est_bytes = 200 * 1024 * 1024
+        if free_bytes < est_bytes + min_free_bytes:
+            free_gb = free_bytes / (1024**3)
+            need_gb = (est_bytes + min_free_bytes) / (1024**3)
+            return jsonify(error=f"Not enough disk space: need ~{need_gb:.2f} GB, only {free_gb:.2f} GB free."), 400
+    except Exception:
+        pass
 
     job_id = str(uuid4())
     safe_title = "".join(c for c in playlist_title if c.isalnum() or c in " _-").strip() or "Playlist"
@@ -421,6 +441,30 @@ def download_audio():
     except FileNotFoundError:
         return jsonify(error="File not found on server."), NOT_FOUND
 
+def cleanup_temp_dirs(max_age_hours=3):
+    try:
+        temp_root = Path(ABS_DOWNLOADS_PATH) / "temp"
+        if not temp_root.exists():
+            return
+        now = time.time()
+        for entry in temp_root.iterdir():
+            try:
+                if entry.is_dir():
+                    mtime = entry.stat().st_mtime
+                    if now - mtime > max_age_hours * 3600:
+                        shutil.rmtree(entry, ignore_errors=True)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
+def cleanup_temp_dirs_loop():
+    while True:
+        cleanup_temp_dirs(3)
+        time.sleep(3600)
+
+
 def process_media_job(job_id, urls, format_type, quality, embed_meta):
     job = jobs[job_id]
     
@@ -479,6 +523,14 @@ def process_media_job(job_id, urls, format_type, quality, embed_meta):
             file_percent = (downloaded / total) if total > 0 else 0
             overall_percent = ((current_file_idx + file_percent) / total_files) * 100
             job['progress'] = min(99, int(overall_percent))
+        # Mid-job disk space check (abort if < 500MB)
+        try:
+            usage = shutil.disk_usage(ABS_DOWNLOADS_PATH)
+            if usage.free < 500 * 1024 * 1024:
+                raise Exception("Low disk space during download. Aborting.")
+        except Exception as e:
+            if "Low disk space" in str(e):
+                raise
 
     opts['progress_hooks'] = [progress_hook]
 
@@ -511,7 +563,17 @@ def process_media_job(job_id, urls, format_type, quality, embed_meta):
         else:
             zip_filename = f"{job['safe_title'][:50]}_{job_id[:6]}.zip"
             zip_path = Path(ABS_DOWNLOADS_PATH) / zip_filename
-            shutil.make_archive(str(zip_path.with_suffix('')), 'zip', temp_dir)
+            # Create zip by adding files one by one and deleting source to save disk space
+            with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+                for f in downloaded_files:
+                    try:
+                        zf.write(str(f), arcname=f.name)
+                        try:
+                            f.unlink()
+                        except Exception:
+                            pass
+                    except Exception:
+                        continue
             access_manager.add_token(token, zip_filename)
 
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -527,6 +589,7 @@ def process_media_job(job_id, urls, format_type, quality, embed_meta):
 def main():
     Path(ABS_DOWNLOADS_PATH).mkdir(parents=True, exist_ok=True)
     threading.Thread(target=access_manager.manage_tokens, daemon=True).start()
+    threading.Thread(target=cleanup_temp_dirs_loop, daemon=True).start()
     app.run(debug=True, port=5000)
 
 if __name__ == "__main__":
