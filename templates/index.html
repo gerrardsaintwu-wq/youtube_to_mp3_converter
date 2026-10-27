@@ -141,8 +141,9 @@
             if (currentMedia.type === 'video') {
                 const mb = estimateSize(currentMedia.duration, format, q);
                 document.getElementById('singleFileSize').innerText = `Estimated Size: ~${formatSizeMB(mb)}`;
-            } else {
-                currentMedia.videos.forEach((vid, i) => {
+            } else if (currentMedia.type === 'playlist') {
+                const data = currentMedia.videos || window._playlistData || [];
+                data.forEach((vid, i) => {
                     const el = document.getElementById(`size-${i}`);
                     if (el) {
                         const mb = estimateSize(vid.duration, format, q);
@@ -174,9 +175,15 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ url })
                 });
-                const startData = await startRes.json();
+                let startData;
+                try {
+                    startData = await startRes.json();
+                } catch (e) {
+                    const text = await startRes.text();
+                    throw new Error(`Server error ${startRes.status}: ${text.substring(0, 100)}`);
+                }
                 
-                if (!startRes.ok) throw new Error(startData.error);
+                if (!startRes.ok) throw new Error(startData.error || 'Analysis failed to start');
 
                 const interval = setInterval(async () => {
                     const pollRes = await fetch(`/api/analyze_status?job_id=${startData.job_id}`);
@@ -236,13 +243,101 @@
         function renderPlaylistItems(videos) {
             const plList = document.getElementById('pl-list');
             plList.innerHTML = '';
-            videos.forEach((vid, i) => {
-                const thumbSrc = vid.thumbnail ? vid.thumbnail : 'https://via.placeholder.com/60x45?text=No+Thumb';
-                plList.innerHTML += `
-                    <div class="playlist-item" data-title="${vid.title.toLowerCase()}">
+            // Remove previous page-level scroll fallback listener
+            if (window._playlistScrollHandler) {
+                window.removeEventListener('scroll', window._playlistScrollHandler);
+                plList.removeEventListener('scroll', window._playlistScrollHandler);
+                window._playlistScrollHandler = null;
+            }
+            // Clear any existing sentinel
+            const oldSentinel = document.getElementById('pl-sentinel');
+            if (oldSentinel) oldSentinel.remove();
+            if (!window._playlistData) window._playlistData = [];
+            window._playlistData = videos.map((vid, i) => ({
+                title: vid.title,
+                url: vid.url,
+                thumbnail: vid.thumbnail,
+                duration: vid.duration,
+                idx: i,
+                selected: true
+            }));
+            window._playlistRenderIndex = 0;
+            // Remove existing sentinel if any (fresh one added below)
+            const oldCounter = document.getElementById('pl-shown-counter');
+            if (oldCounter) oldCounter.remove();
+            // Add shown counter
+            const shownCounter = document.createElement('div');
+            shownCounter.id = 'pl-shown-counter';
+            shownCounter.style.fontSize = '0.8rem';
+            shownCounter.style.color = '#666';
+            shownCounter.style.marginTop = '6px';
+            plList.parentElement.appendChild(shownCounter);
+            // Render first chunk
+            renderPlaylistChunk(50);
+            // Add sentinel for infinite scroll
+            const sentinel = document.createElement('div');
+            sentinel.id = 'pl-sentinel';
+            sentinel.style.height = '1px';
+            plList.appendChild(sentinel);
+            if ('IntersectionObserver' in window) {
+                const obs = new IntersectionObserver((entries) => {
+                    if (entries[0].isIntersecting) {
+                        renderPlaylistChunk(50);
+                    }
+                }, { rootMargin: '300px 0px', threshold: 0 });
+                obs.observe(sentinel);
+                window._playlistObserver = obs;
+            }
+            // Scroll fallback (mobile-safe): fires when nearing bottom of list or page
+            const nearBottom = () => {
+                const data = window._playlistData || [];
+                if ((window._playlistRenderIndex || 0) >= data.length) return;
+                const rect = sentinel.getBoundingClientRect();
+                if (rect.top < window.innerHeight + 300) {
+                    renderPlaylistChunk(50);
+                }
+            };
+            window.addEventListener('scroll', nearBottom, { passive: true });
+            plList.addEventListener('scroll', nearBottom, { passive: true });
+            window._playlistScrollHandler = nearBottom;
+        }
+
+        function renderPlaylistChunk(chunkSize) {
+            const plList = document.getElementById('pl-list');
+            const data = window._playlistData || [];
+            const start = window._playlistRenderIndex || 0;
+            if (start >= data.length) {
+                const sentinel = document.getElementById('pl-sentinel');
+                if (sentinel && window._playlistObserver) {
+                    try { window._playlistObserver.unobserve(sentinel); } catch(e){}
+                }
+                updateShownCounter();
+                return;
+            }
+            // Show loading indicator
+            let loader = document.getElementById('pl-loader');
+            if (!loader) {
+                loader = document.createElement('div');
+                loader.id = 'pl-loader';
+                loader.innerText = 'Loading more items...';
+                loader.style.fontSize = '0.8rem';
+                loader.style.color = '#666';
+                loader.style.padding = '6px 0';
+                const sentinel = document.getElementById('pl-sentinel');
+                if (sentinel) sentinel.insertAdjacentElement('beforebegin', loader);
+                else plList.appendChild(loader);
+            }
+            const end = Math.min(start + chunkSize, data.length);
+            let html = '';
+            for (let i = start; i < end; i++) {
+                const vid = data[i];
+                const thumbSrc = vid.thumbnail ? vid.thumbnail.replace('hqdefault', 'mqdefault') : `https://i.ytimg.com/vi/${(vid.url.split('v=')[1]||vid.url.split('/').pop())}/mqdefault.jpg`;
+                const checked = vid.selected !== false ? 'checked' : '';
+                html += `
+                    <div class="playlist-item" data-title="${vid.title.toLowerCase()}" data-idx="${i}">
                         <label class="pl-label">
-                            <input type="checkbox" class="playlist-cb" value="${vid.url}" checked onchange="updateSelectedCount()" data-idx="${i}">
-                            <img src="${thumbSrc}" class="pl-thumb">
+                            <input type="checkbox" class="playlist-cb" value="${vid.url}" ${checked} onchange="onPlaylistCheckboxChange(this)" data-idx="${i}">
+                            <img src="${thumbSrc}" loading="lazy" class="pl-thumb">
                             <div class="pl-info">
                                 <span class="pl-title">${vid.title}</span>
                                 <span class="pl-size" id="size-${i}" data-mb="0">~0 MB</span>
@@ -250,48 +345,120 @@
                         </label>
                     </div>
                 `;
-            });
+            }
+            // Insert before sentinel if exists
+            const sentinel = document.getElementById('pl-sentinel');
+            if (loader && loader.parentNode) loader.parentNode.removeChild(loader);
+            if (sentinel) {
+                sentinel.insertAdjacentHTML('beforebegin', html);
+            } else {
+                plList.insertAdjacentHTML('beforeend', html);
+            }
+            window._playlistRenderIndex = end;
+            // Update sizes for newly rendered items
+            if (currentMedia && currentMedia.type === 'playlist') {
+                updateQualityLabelsAndSizes();
+            }
+            updateSelectedCount();
+            updateShownCounter();
+        }
+
+        function updateShownCounter() {
+            const counter = document.getElementById('pl-shown-counter');
+            const data = window._playlistData || [];
+            const rendered = document.querySelectorAll('.playlist-item').length;
+            if (counter) {
+                counter.innerText = `Showing ${rendered} of ${data.length} items`;
+            }
+        }
+
+        function onPlaylistCheckboxChange(cb) {
+            const idx = parseInt(cb.getAttribute('data-idx'));
+            if (window._playlistData && window._playlistData[idx]) {
+                window._playlistData[idx].selected = cb.checked;
+            }
+            updateSelectedCount();
         }
 
         function filterPlaylist() {
             const query = document.getElementById('playlistSearch').value.toLowerCase();
-            const items = document.querySelectorAll('.playlist-item');
-            items.forEach(item => {
-                const title = item.getAttribute('data-title');
-                item.style.display = title.includes(query) ? 'flex' : 'none';
+            const data = window._playlistData || [];
+            // Show/hide based on data; ensure items are rendered up to needed? just toggle existing rendered
+            data.forEach((vid, i) => {
+                const item = document.querySelector(`.playlist-item[data-idx="${i}"]`);
+                if (item) {
+                    const title = vid.title.toLowerCase();
+                    item.style.display = title.includes(query) ? 'flex' : 'none';
+                }
             });
+            updateSelectedCount();
         }
 
         function toggleAll(source) {
-            const visibleItems = document.querySelectorAll('.playlist-item');
-            visibleItems.forEach(item => {
-                if (item.style.display !== 'none') {
-                    item.querySelector('.playlist-cb').checked = source.checked;
+            const data = window._playlistData || (currentMedia && currentMedia.videos) || [];
+            // Update all checkboxes for rendered items
+            const checkboxes = document.querySelectorAll('.playlist-cb');
+            checkboxes.forEach(cb => {
+                const item = cb.closest('.playlist-item');
+                if (!item || item.style.display === 'none') return;
+                cb.checked = source.checked;
+            });
+            // Also ensure state is consistent for rendered items
+            data.forEach((vid, i) => {
+                const cb = document.querySelector(`.playlist-cb[data-idx="${i}"]`);
+                if (cb) {
+                    const item = cb.closest('.playlist-item');
+                    if (item && item.style.display !== 'none') {
+                        cb.checked = source.checked;
+                    }
                 }
             });
             updateSelectedCount();
         }
 
         function updateSelectedCount() {
+            const data = window._playlistData || [];
+            if (data.length > 0) {
+                let checkedCount = 0;
+                data.forEach(v => {
+                    if (v.selected !== false) checkedCount++;
+                });
+                let totalMB = 0;
+                document.querySelectorAll('.playlist-cb:checked').forEach(cb => {
+                    const idx = cb.getAttribute('data-idx');
+                    const sizeEl = document.getElementById(`size-${idx}`);
+                    if (sizeEl) totalMB += parseFloat(sizeEl.getAttribute('data-mb') || 0);
+                });
+                const elCount = document.getElementById('selectedCount');
+                if (elCount) elCount.innerText = `Select Videos (${checkedCount}/${data.length}) - Total: ~${formatSizeMB(totalMB)}`;
+                return;
+            }
             const checkboxes = document.querySelectorAll('.playlist-cb');
             const checked = document.querySelectorAll('.playlist-cb:checked');
             let totalMB = 0;
-            
             checked.forEach(cb => {
                 const idx = cb.getAttribute('data-idx');
                 const sizeEl = document.getElementById(`size-${idx}`);
                 if (sizeEl) totalMB += parseFloat(sizeEl.getAttribute('data-mb') || 0);
             });
-
-            document.getElementById('selectedCount').innerText = `Select Videos (${checked.length}/${checkboxes.length}) - Total: ~${formatSizeMB(totalMB)}`;
+            const elCount = document.getElementById('selectedCount');
+            if (elCount) elCount.innerText = `Select Videos (${checked.length}/${checkboxes.length}) - Total: ~${formatSizeMB(totalMB)}`;
         }
 
         async function startConversion() {
             let urls = [];
             if (currentMedia.type === 'playlist') {
-                const checkboxes = document.querySelectorAll('.playlist-cb:checked');
-                if (checkboxes.length === 0) return alert("Select at least one video!");
-                checkboxes.forEach(cb => urls.push(cb.value));
+                const data = window._playlistData || [];
+                if (data.length > 0) {
+                    data.forEach(v => {
+                        if (v.selected !== false) urls.push(v.url);
+                    });
+                } else {
+                    const checkboxes = document.querySelectorAll('.playlist-cb:checked');
+                    if (checkboxes.length === 0) return alert("Select at least one video!");
+                    checkboxes.forEach(cb => urls.push(cb.value));
+                }
+                if (urls.length === 0) return alert("Select at least one video!");
             } else {
                 urls.push(currentMedia.url);
             }
