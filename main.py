@@ -21,9 +21,9 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 
 jobs = {}
 analysis_jobs = {}
-# Create a strict limit of 3 concurrent workers. 
+# Create a strict limit of 5 concurrent workers. 
 # Anything beyond this waits in the queue.
-executor = ThreadPoolExecutor(max_workers=3)
+executor = ThreadPoolExecutor(max_workers=5)
 
 @app.route("/", methods=["GET"])
 def index():
@@ -189,25 +189,6 @@ def analyze_worker(job_id, url, is_admin):
         job['error'] = error_msg
 
 
-@app.route("/api/convert", methods=["POST"])
-def start_conversion():
-    data = request.json
-    urls = data.get("urls", [])
-    format_type = data.get("format", "mp3")
-    quality = data.get("quality", "high")
-    embed_meta = data.get("metadata", False)
-    playlist_title = data.get("playlist_title", "YouTube_Media")
-
-    if not urls:
-        return jsonify(error="No valid URLs provided"), BAD_REQUEST
-
-    job_id = str(uuid4())
-    safe_title = "".join(c for c in playlist_title if c.isalnum() or c in " _-").strip() or "Playlist"
-    
-    jobs[job_id] = {'status': 'processing', 'progress': 0, 'safe_title': safe_title}
-    threading.Thread(target=process_media_job, args=(job_id, urls, format_type, quality, embed_meta)).start()
-    return jsonify(job_id=job_id)
-
 @app.route("/api/status", methods=["GET"])
 def check_status():
     job_id = request.args.get("job_id")
@@ -242,7 +223,13 @@ def process_media_job(job_id, urls, format_type, quality, embed_meta):
         'quiet': True,
         'ignoreerrors': True,
         'nocheckcertificate': True,
-        'socket_timeout': 15
+        'socket_timeout': 15,
+        # --- Speed optimizations ---
+        'concurrent_fragment_downloads': 8,  # Split streams into fragments downloaded in parallel (HLS/DASH)
+        'retries': 5,                        # Fewer wasted restarts on flaky connections
+        'fragment_retries': 5,
+        'no_warnings': True,
+        'noprogress': True,                  # progress_hooks still fire; just skips console spam
     }
 
     postprocessors = []

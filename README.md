@@ -1,4 +1,4 @@
-# 🎵 YT Converter Pro
+# 🎵 YouToMedia
 
 A highly reliable, modern YouTube to MP3/MP4 converter powered by **Python (Flask)**, **`yt-dlp`**, and **FFmpeg**. 
 
@@ -50,3 +50,19 @@ You **must** have FFmpeg installed on your system for audio/video conversion to 
 Ensure you have Python 3.8+ installed, then run:
 ```bash
 pip install -r requirements.txt
+```
+
+---
+
+## 🖥️ Running the Server (Demo Only)
+
+Use `start_server.bat` in the project root to launch everything:
+
+* Checks that **Python** and **FFmpeg** are on your `PATH` (with clear errors if they aren't).
+* Auto-installs Python dependencies on first run if missing.
+* Starts the production server (`serve.py` via **Waitress**) in its own console window on `http://localhost:5000`.
+* Launches **ngrok** (`ngrok http --url=<your-static-url> 5000`) in the main window, so the app is reachable from outside your network via the static domain. Closing/Ctrl+C-ing ngrok also shuts the server window down.
+
+Note that only one instance should run at a time, since port `5000` is hardcoded in `serve.py`.
+
+> ⚠️ **Demo purposes only.** This setup (single Waitress process, in-memory token store, localhost-only admin endpoint, hardcoded port/token expiry) is fine for personal use and quick demos, **not** optimized for a full web deployment. Exposing it publicly means trusting a token gate with no user accounts, no rate limiting, and no HTTPS management beyond ngrok's edge. Decide critically before hosting anything long-term.

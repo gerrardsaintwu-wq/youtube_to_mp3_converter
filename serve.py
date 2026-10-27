@@ -16,7 +16,7 @@ if __name__ == "__main__":
     # Start the token manager in the background
     threading.Thread(target=access_manager.manage_tokens, daemon=True).start()
     
-    print("🚀 YT Converter Pro is starting via Waitress...")
+    print("🚀 YouToMedia is starting via Waitress...")
     print("🌐 Listening on http://0.0.0.0:5000")
     
     # Run the Waitress production server
